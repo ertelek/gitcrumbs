@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gitcrumbs"
-version = "0.1.1"
-description = "Track durable working-tree states for Git repos: snapshot, diff, restore, and auto-track stable changes."
+version = "0.1.2"
+description = "A CLI tool that captures intermediate working states of your Git repo in-between commits."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}

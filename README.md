@@ -1,19 +1,14 @@
 # gitcrumbs
 
-_A tiny CLI tool that captures **durable working states** of your Git repo._  
-It makes a snapshot **only when changes persist** (e.g., after you pause to test, or step away), and lets you **list**, **diff**, and **restore** those states without interfering with Git.
+_A CLI tool that captures **intermediate working states** of your Git repo._  
 
-- **Zero friction**: works with your existing Git workflow.  
-- **Lightweight**: uses Git’s object store and a small SQLite DB under `.git/gitcrumbs/`.  
-- **Safe**: won’t change commits or refs.
-
----
-
-## Why would I want this?
-
-Sometimes you tweak code, run tests, tweak again… and only some of those transient edits “stick.” `gitcrumbs` records **stable** working trees so you can jump back to the exact files you had when something actually worked, even if you never committed.
+It watches your files as you make changes, and when you step away to grab a coffee or test the changes, it creates a snapshot automatically. This way, you can browse through older versions of your repo.
 
 Think of it as **temporary but reliable breadcrumbs** between commits.
+
+- **Zero friction**: works with your existing Git workflow.  
+- **Lightweight**: uses Git’s object store and a small SQLite DB under `.git/gitcrumbs/`.   
+- **Safe**: won’t change commits or refs.
 
 ---
 
@@ -22,8 +17,10 @@ Think of it as **temporary but reliable breadcrumbs** between commits.
 The CLI is published as `gitcrumbs` on PyPI. You can install it system-wide and use it in any repo.
 
 **Recommended (isolated CLIs):**
+
+First, [install pipx](https://pipx.pypa.io/stable/installation/). Then install `gitcrumbs`:
+
 ```bash
-apt install pipx
 pipx install gitcrumbs
 ```
 
@@ -41,32 +38,30 @@ python -m pip install gitcrumbs
 ```bash
 cd /path/to/your/repo
 
-# 1) Prepare state storage under .git/gitcrumbs/
+# 1) Prepares an SQLite DB and config file in .git/gitcrumbs/ to track file changes
 gitcrumbs init
 
-# 2) Start the tracker: it snapshots only when you make changes and they last (dwell) for some time. Ctrl-C to stop
+# 2) Start the tracker: it checks your files for new changes every `scan-interval` seconds, but snapshots only when the changes have stayed for some time (snapshot-after). Ctrl-C to stop
 gitcrumbs track
 # or
-gitcrumbs track --interval 30 --dwell 90
+gitcrumbs track --scan-interval 30 --snapshot-after 90
 
-# 3) See what has been captured
+# 3) See what has been captured. Shows you snapshot IDs and when they were taken
 gitcrumbs timeline
 
-# 4) Jump to an earlier/later working state
-gitcrumbs previous  # alias: gitcrumbs p
-gitcrumbs next  # alias: gitcrumbs n
+# 4) Jump to an earlier/later state
+gitcrumbs previous  # or gitcrumbs p
+gitcrumbs next  # or gitcrumbs n
 
-# 5) Optional manual snapshot at any time
-gitcrumbs snapshot
+# 5) Restore a particular snapshot
+gitcrumbs restore 2
+
+# 6) Compare two snapshots of the same file
+gitcrumbs diff 3 5 -f path/to/file.py
+
+# 7) See all files that have changed between two snapshots
+gitcrumbs diff 1 4 --all
 ```
-
----
-
-## Core ideas
-
-- **Durable change**: a change that remains after a short wait (`--dwell`, e.g., 90s). Flapping edits don’t create noise.  
-- **Snapshot**: a record of file states (tracked + untracked) at a moment in time, stored in `.git/gitcrumbs/gitcrumbs.db`.  
-- **Anchoring on restore**: when you restore an old snapshot, `gitcrumbs` **does not** create a new one immediately. It **waits** until you make a new durable change, then records a fresh snapshot that’s linked back to the one you restored from.
 
 ---
 
@@ -82,11 +77,11 @@ gitcrumbs previous        # step back one snapshot
 
 ### 2) Continuous capture while you work
 ```bash
-gitcrumbs track --interval 15 --dwell 60
-# Let this run in another terminal tab or tmux pane
+gitcrumbs track --scan-interval 15 --snapshot-after 60
+# Let this run in a separate terminal tab
 ```
 
-### 3) Compare two states
+### 3) Compare two snapshots
 ```bash
 gitcrumbs diff 12 15
 # Shows added/deleted/modified files between snapshots #12 and #15
@@ -109,22 +104,18 @@ gitcrumbs remove --yes       # removes gitcrumbs from the current repo
 
 ```text
 gitcrumbs init
-  Initialize .git/gitcrumbs/ (SQLite DB + config).
+  Initialise .git/gitcrumbs/ (SQLite DB + config).
 
-gitcrumbs track [--interval N] [--dwell M]
+gitcrumbs track [--scan-interval N] [--snapshot-after M]
   Continuous tracker: snapshot only when the state changes and stays changed for M seconds.
-
-gitcrumbs snapshot
-  Create a snapshot right now.
 
 gitcrumbs timeline
   Show all snapshots with timestamps, branch, and a short summary.
 
-gitcrumbs status
-  Show tracker status and the current cursor (baseline snapshot id).
-
-gitcrumbs diff A B
-  Summarize differences between snapshots A and B (added/deleted/modified paths).
+gitcrumbs diff A B [--all] [--file-path PATH]
+  Show differences between snapshots A and B (added/deleted/modified paths).
+  - --all: list all files (by default, only shows the first 5 files for easy visibility)
+  - -f, --file-path PATH: show a unified patch for that single file between A and B. When --file-path is used, --all is ignored.
 
 gitcrumbs restore ID [--purge/--no-purge]
   Restore working files to snapshot ID. Default: --purge (remove extra files).
@@ -134,6 +125,12 @@ gitcrumbs next [--purge/--no-purge]      # alias: n
 
 gitcrumbs previous [--purge/--no-purge]  # alias: p
   Restore to the previous snapshot before the current cursor (defaults to --purge).
+
+gitcrumbs snapshot
+  Create a snapshot right now.
+
+gitcrumbs status
+  Show tracker status and the current cursor (baseline snapshot id).
 
 gitcrumbs remove [--dry-run] [--yes|-y]
   Delete .git/gitcrumbs (DB and metadata). Safe: does not affect Git commits/branches.
@@ -148,6 +145,8 @@ gitcrumbs remove [--dry-run] [--yes|-y]
 - For untracked files, it records metadata + hashed content.  
 - Snapshots live in SQLite; file bytes live in Git’s object store (efficient, deduplicated).  
 - The tracker writes a tiny `tracker_state.json` so it knows when to anchor after restore and when to create the next snapshot.
+- Keeps track of your branches and commits so when you restore a snapshot, things are in the same state as they were when it was created.
+- Ignores any files in .gitignore.
 
 ---
 
@@ -156,7 +155,6 @@ gitcrumbs remove [--dry-run] [--yes|-y]
 - Works **before first commit** (unborn `HEAD`) and in **detached HEAD**.  
 - Pauses during **merge/rebase** or when `.git/index.lock` exists.  
 - On restore, if the saved branch no longer exists, it falls back to **detached** at the recorded commit.  
-- Default restore is **purge on** for predictability; append `--no-purge` to keep extra files.
 
 ---
 
@@ -164,13 +162,13 @@ gitcrumbs remove [--dry-run] [--yes|-y]
 
 - “`gitcrumbs` not found after installation” → If you used `pip install --user`, ensure `~/.local/bin` is on your PATH; or prefer `pipx`.  
 - “No snapshots yet” → Start the tracker or run `gitcrumbs snapshot` manually.  
-- “Snapshot created right after restore” → That should not happen with the anchoring logic. If it does, please open an issue with your `timeline` and steps.
+- “Not inside a Git working tree.” → `cd` into a Git repo or initialise one with `git init`.
 
 ---
 
 ## Contributing
 
-Issues and PRs are welcome. If you hit an edge case, share a minimal repro.
+Issues and PRs are welcome! If you hit an edge case, share a minimal repro.
 
 ---
 
