@@ -307,7 +307,7 @@ def branch_exists(repo: Path, name: str) -> bool:
     return rc == 0
 
 
-def restore_snapshot(repo: Path, snap_id: int, purge: bool = True) -> None:
+def restore_snapshot(repo: Path, snap_id: int, purge: bool = False) -> None:
     lock = restore_lock_path(repo)
     try:
         lock.write_text(str(time.time()))

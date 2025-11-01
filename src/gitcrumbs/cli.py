@@ -197,7 +197,7 @@ def diff(
 def restore(
     snap_id: int,
     purge: bool = typer.Option(
-        True,
+        False,
         "--purge/--no-purge",
         help="Delete files not in the snapshot (default: purge).",
         show_default=True),
@@ -226,7 +226,7 @@ def restore(
 @app.command(
     help="Restore the next snapshot after the current cursor (alias: n).")
 def next(purge: bool = typer.Option(
-    True,
+    False,
     "--purge/--no-purge",
     help="Delete files not in the target snapshot (default: purge).",
     show_default=True), ):
@@ -273,7 +273,7 @@ def next(purge: bool = typer.Option(
 
 @app.command(name="n", hidden=True)
 def _next_alias(purge: bool = typer.Option(
-    True,
+    False,
     "--purge/--no-purge",
     help="Delete files not in the target snapshot (default: purge).",
     show_default=True), ):
@@ -283,7 +283,7 @@ def _next_alias(purge: bool = typer.Option(
 @app.command(
     help="Restore the previous snapshot before the current cursor (alias: p).")
 def previous(purge: bool = typer.Option(
-    True,
+    False,
     "--purge/--no-purge",
     help="Delete files not in the target snapshot (default: purge).",
     show_default=True), ):
@@ -332,7 +332,7 @@ def previous(purge: bool = typer.Option(
 
 @app.command(name="p", hidden=True)
 def _previous_alias(purge: bool = typer.Option(
-    True,
+    False,
     "--purge/--no-purge",
     help="Delete files not in the target snapshot (default: purge).",
     show_default=True), ):

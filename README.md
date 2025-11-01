@@ -118,13 +118,13 @@ gitcrumbs diff A B [--all] [--file-path PATH]
   - -f, --file-path PATH: show a unified patch for that single file between A and B. When --file-path is used, --all is ignored.
 
 gitcrumbs restore ID [--purge/--no-purge]
-  Restore working files to snapshot ID. Default: --purge (remove extra files).
+  Restore working files to snapshot ID. Default: --no-purge (remove extra files).
 
 gitcrumbs next [--purge/--no-purge]      # alias: n
-  Restore to the next snapshot after the current cursor (defaults to --purge).
+  Restore to the next snapshot after the current cursor (defaults to --no-purge).
 
 gitcrumbs previous [--purge/--no-purge]  # alias: p
-  Restore to the previous snapshot before the current cursor (defaults to --purge).
+  Restore to the previous snapshot before the current cursor (defaults to --no-purge).
 
 gitcrumbs snapshot
   Create a snapshot right now.
