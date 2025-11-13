@@ -134,6 +134,11 @@ gitcrumbs status
 
 gitcrumbs remove [--dry-run] [--yes|-y]
   Delete .git/gitcrumbs (DB and metadata). Safe: does not affect Git commits/branches.
+
+gitcrumbs show-file ID PATH
+  Print the file at the specified path as captured in the specified snapshot ID to stdout.
+  - PATH may be repo-relative or absolute (must be inside the repo).
+  - Prints nothing if PATH didn’t exist / was deleted / was UNHASHED in that snapshot.
 ```
 
 ---
