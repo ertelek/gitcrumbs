@@ -4,6 +4,7 @@ import shutil
 import time
 from pathlib import Path
 import typer
+from typing import Optional
 from rich.table import Table
 from rich import print as rprint
 from rich.markup import escape
@@ -14,7 +15,7 @@ from gitcrumbs.utils import (
     restore_snapshot, NotAGitRepo, BareRepoUnsupported, index_locked,
     in_merge_or_rebase, restore_lock_path, state_dir, compute_diff_sets,
     patch_for_file_between_snapshots, normalize_snapshot_path_arg,
-    PathOutsideRepo, maybe_snapshot_current_state)
+    PathOutsideRepo, maybe_snapshot_current_state, write_file_to_stdout)
 
 app = typer.Typer(
     help=("gitcrumbs — record durable working-tree snapshots for a Git repo, "
@@ -411,6 +412,18 @@ def track(
             time.sleep(scan_interval)
     except KeyboardInterrupt:
         print("Stopped tracking.")
+
+
+@app.command(help="Print file contents for PATH at snapshot ID to stdout.")
+def show_file(
+    snap_id: str,
+    file_path: str = typer.Argument(..., help="Repo-relative or absolute path"),
+):
+    try:
+        write_file_to_stdout(int(snap_id), Path(file_path))
+    except Exception as e:
+        print(str(e))
+        raise typer.Exit(2)
 
 
 @app.command(
