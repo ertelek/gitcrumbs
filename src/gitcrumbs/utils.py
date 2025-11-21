@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, json, sqlite3, subprocess, hashlib, time, tempfile
+import os, json, sqlite3, subprocess, hashlib, sys, time, tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -509,3 +509,47 @@ def maybe_snapshot_current_state(repo: Path) -> Optional[int]:
         atomic_write_json(tracker_state_path(repo), state)
         return snap_id
     return None
+
+def write_file_to_stdout(
+    snap_id: int,
+    file_path: Path
+):
+    try:
+        repo = ensure_repo_root()
+    except (NotAGitRepo, BareRepoUnsupported) as e:
+        print(str(e))
+        raise e
+
+    try:
+        rel = normalize_snapshot_path_arg(repo, file_path)
+    except PathOutsideRepo as pe:
+        print(str(pe))
+        raise pe
+
+    manifest = get_snapshot_manifest(repo, snap_id)
+    entry: Optional[tuple[str, str, int, int]] = manifest.get(rel)
+    if entry is None:
+        # file absent in this snapshot (e.g., Added in the other side)
+        # print nothing, exit so the caller can treat as empty
+        return
+
+    status, blob, *_ = entry
+    if status == "D":
+        # deleted in this snapshot -> empty content
+        return
+
+    if blob in ("UNHASHED", "DELETED"):
+        # captured as unreadable/unhashed, treat as empty
+        return
+
+    out, rc, _ = try_git(repo, "cat-file", "blob", blob)
+    if rc != 0:
+        # could not read object -> empty
+        return
+
+    # Write bytes as-is; Typer/print would coerce/escape
+    if isinstance(out, str):
+        pass
+        sys.stdout.write(out)
+    else:
+        sys.stdout.buffer.write(out)
