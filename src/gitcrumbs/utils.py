@@ -29,7 +29,7 @@ def run_git(repo: Path,
     cmd = ["git", "-C", str(repo), *args]
     p = subprocess.run(cmd, capture_output=True, text=text)
     if check and p.returncode != 0:
-        raise ShellError(f"git {' '.join(args)} failed:\\n{p.stderr}")
+        raise ShellError(f"git {' '.join(args)} failed:\n{p.stderr}")
     return p.stdout
 
 
@@ -37,6 +37,19 @@ def try_git(repo: Path, *args: str) -> tuple[str, int, str]:
     p = subprocess.run(["git", "-C", str(repo), *args],
                        capture_output=True,
                        text=True)
+    return p.stdout, p.returncode, p.stderr
+
+
+def try_git_bytes(repo: Path, *args: str) -> tuple[bytes, int, bytes]:
+    """
+    Run a git command and return raw bytes for stdout/stderr.
+
+    Used for commands that may emit binary data (e.g., 'git cat-file blob'),
+    to avoid Windows console decoding issues when text=True.
+    """
+    p = subprocess.run(["git", "-C", str(repo), *args],
+                       capture_output=True,
+                       text=False)
     return p.stdout, p.returncode, p.stderr
 
 
@@ -342,17 +355,17 @@ def restore_snapshot(repo: Path, snap_id: int, purge: bool = False) -> None:
                 continue
             if blob in ("UNHASHED", "DELETED"):
                 continue
-            out, rc, err = try_git(repo, "cat-file", "blob", blob)
+            out, rc, err = try_git_bytes(repo, "cat-file", "blob", blob)
             if rc != 0:
                 try:
                     note = p.with_suffix(p.suffix + ".gitcrumbs.missing")
-                    note.write_text(f"Missing blob {blob}\\n{err}")
+                    err_text = err.decode("utf-8", errors="replace")
+                    note.write_text(f"Missing blob {blob}\n{err_text}")
                 except Exception:
                     pass
                 continue
             tmp = p.with_suffix(p.suffix + ".gitcrumbs.tmp")
-            tmp.write_text(out) if isinstance(out, str) else tmp.write_bytes(
-                out)  # type: ignore
+            tmp.write_bytes(out)
             tmp.replace(p)
         if purge:
             for root, dirs, files in os.walk(repo):
@@ -412,13 +425,14 @@ def _write_blob_to_temp(repo: Path, blob: Optional[str]) -> str:
     os.close(fd)
     if blob is None:
         return path
-    out, rc, err = try_git(repo, "cat-file", "blob", blob)
+    out, rc, err = try_git_bytes(repo, "cat-file", "blob", blob)
     if rc != 0:
+        err_text = err.decode("utf-8", errors="ignore")
         with open(path, "w", encoding="utf-8", errors="ignore") as f:
-            f.write(f"[gitcrumbs] failed to read blob {blob}:\\n{err}")
+            f.write(f"[gitcrumbs] failed to read blob {blob}:\n{err_text}")
         return path
     with open(path, "wb") as f:
-        f.write(out.encode("utf-8", errors="replace"))
+        f.write(out)
     return path
 
 
@@ -427,9 +441,9 @@ def _diff_two_files(path_a: str, path_b: str, label_a: str,
     cmd = ["git", "diff", "--no-index", "--binary", "--", path_a, path_b]
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode not in (0, 1):
-        return f"[gitcrumbs] git diff failed:\\n{p.stderr}"
+        return f"[gitcrumbs] git diff failed:\n{p.stderr}"
     patch = p.stdout.replace(path_a, label_a).replace(path_b, label_b)
-    return patch or "(no differences)\\n"
+    return patch or "(no differences)\n"
 
 
 def compute_diff_sets(repo: Path, a: int,
@@ -510,10 +524,8 @@ def maybe_snapshot_current_state(repo: Path) -> Optional[int]:
         return snap_id
     return None
 
-def write_file_to_stdout(
-    snap_id: int,
-    file_path: Path
-):
+
+def write_file_to_stdout(snap_id: int, file_path: Path):
     try:
         repo = ensure_repo_root()
     except (NotAGitRepo, BareRepoUnsupported) as e:
@@ -542,14 +554,13 @@ def write_file_to_stdout(
         # captured as unreadable/unhashed, treat as empty
         return
 
-    out, rc, _ = try_git(repo, "cat-file", "blob", blob)
+    out, rc, _ = try_git_bytes(repo, "cat-file", "blob", blob)
     if rc != 0:
         # could not read object -> empty
         return
 
     # Write bytes as-is; Typer/print would coerce/escape
-    if isinstance(out, str):
-        pass
-        sys.stdout.write(out)
-    else:
+    if isinstance(out, bytes):
         sys.stdout.buffer.write(out)
+    else:
+        sys.stdout.write(out)
