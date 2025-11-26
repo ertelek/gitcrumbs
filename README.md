@@ -139,6 +139,9 @@ gitcrumbs show-file ID PATH
   Print the file at the specified path as captured in the specified snapshot ID to stdout.
   - PATH may be repo-relative or absolute (must be inside the repo).
   - Prints nothing if PATH didn’t exist / was deleted / was UNHASHED in that snapshot.
+
+gitcrumbs --version  # or: gitcrumbs -V
+  Show the installed gitcrumbs version.
 ```
 
 ---
