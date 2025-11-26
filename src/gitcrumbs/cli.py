@@ -9,6 +9,7 @@ from rich.table import Table
 from rich import print as rprint
 from rich.markup import escape
 
+from gitcrumbs import __version__
 from gitcrumbs.utils import (
     ensure_repo_root, connect_db, init_schema, create_snapshot, list_snapshots,
     compute_fingerprint, load_tracker_state, atomic_write_json,
@@ -417,7 +418,8 @@ def track(
 @app.command(help="Print file contents for PATH at snapshot ID to stdout.")
 def show_file(
     snap_id: str,
-    file_path: str = typer.Argument(..., help="Repo-relative or absolute path"),
+    file_path: str = typer.Argument(...,
+                                    help="Repo-relative or absolute path"),
 ):
     try:
         write_file_to_stdout(int(snap_id), Path(file_path))
@@ -482,6 +484,19 @@ def remove(
     except Exception as e:
         print(f"Failed to remove {sdir}: {e}")
         raise typer.Exit(1)
+
+
+@app.callback(invoke_without_command=True)
+def main(version: bool = typer.Option(
+    False,
+    "--version",
+    "-V",
+    help="Show gitcrumbs version and exit.",
+    is_eager=True,
+), ):
+    if version:
+        typer.echo(f"gitcrumbs, version {__version__}")
+        raise typer.Exit()
 
 
 if __name__ == "__main__":
