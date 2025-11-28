@@ -14,9 +14,9 @@ Think of it as **temporary but reliable breadcrumbs** between commits.
 
 ## Install
 
-The CLI is published as `gitcrumbs` on PyPI. You can install it system-wide and use it in any repo.
+This tool is published as `gitcrumbs` on PyPI. You can install it system-wide and use it in any repo.
 
-**Recommended (isolated CLIs):**
+**Recommended:**
 
 First, [install pipx](https://pipx.pypa.io/stable/installation/). Then install `gitcrumbs`:
 
@@ -24,7 +24,7 @@ First, [install pipx](https://pipx.pypa.io/stable/installation/). Then install `
 pipx install gitcrumbs
 ```
 
-**Standard pip in a virtual environment:**
+**Alternative (using pip in a virtual environment):**
 ```bash
 python -m pip install gitcrumbs
 ```
