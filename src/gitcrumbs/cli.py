@@ -563,13 +563,13 @@ def remove(
 
 @app.command(help="Rename a snapshot with a new ID (label).")
 def rename(
-    existing: str = typer.Argument(
+    existing_id: str = typer.Argument(
         ...,
         help="Existing snapshot ID or label.",
     ),
     new_id: str = typer.Argument(
         ...,
-        help="New Label.",
+        help="New ID or label.",
     ),
 ):
     try:
@@ -579,7 +579,7 @@ def rename(
         raise typer.Exit(2)
 
     try:
-        snap_id = resolve_snapshot_id(repo, existing)
+        snap_id = resolve_snapshot_id(repo, existing_id)
     except SnapshotNotFound as e:
         print(str(e))
         raise typer.Exit(2)
@@ -593,7 +593,7 @@ def rename(
         print(str(e))
         raise typer.Exit(2)
 
-    print(f"Changed snapshot label from '{existing}' to '{new_id}'.")
+    print(f"Changed snapshot label from '{existing_id}' to '{new_id}'.")
 
 
 @app.callback(invoke_without_command=True)
