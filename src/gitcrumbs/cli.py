@@ -11,12 +11,31 @@ from rich.markup import escape
 
 from gitcrumbs import __version__
 from gitcrumbs.utils import (
-    ensure_repo_root, connect_db, init_schema, create_snapshot, list_snapshots,
-    compute_fingerprint, load_tracker_state, atomic_write_json,
-    restore_snapshot, NotAGitRepo, BareRepoUnsupported, index_locked,
-    in_merge_or_rebase, restore_lock_path, state_dir, compute_diff_sets,
-    patch_for_file_between_snapshots, normalize_snapshot_path_arg,
-    PathOutsideRepo, maybe_snapshot_current_state, write_file_to_stdout)
+    ensure_repo_root,
+    connect_db,
+    init_schema,
+    create_snapshot,
+    list_snapshots,
+    compute_fingerprint,
+    load_tracker_state,
+    atomic_write_json,
+    restore_snapshot,
+    NotAGitRepo,
+    BareRepoUnsupported,
+    index_locked,
+    in_merge_or_rebase,
+    restore_lock_path,
+    state_dir,
+    compute_diff_sets,
+    patch_for_file_between_snapshots,
+    normalize_snapshot_path_arg,
+    PathOutsideRepo,
+    maybe_snapshot_current_state,
+    write_file_to_stdout,
+    resolve_snapshot_id,
+    rename_snapshot,
+    SnapshotNotFound,
+)
 
 app = typer.Typer(
     help=("gitcrumbs — record durable working-tree snapshots for a Git repo, "
@@ -45,13 +64,13 @@ def _ordered_snapshot_ids(repo: Path):
 def _render_patch_colored(patch: str) -> None:
     for line in patch.splitlines():
         esc = escape(line)
-        if line.startswith('@@'):
+        if line.startswith("@@"):
             rprint(f"[cyan]{esc}[/cyan]")
-        elif line.startswith('+++') or line.startswith('---'):
+        elif line.startswith("+++") or line.startswith("---"):
             rprint(f"[bold]{esc}[/bold]")
-        elif line.startswith('+'):
+        elif line.startswith("+"):
             rprint(f"[green]{esc}[/green]")
-        elif line.startswith('-'):
+        elif line.startswith("-"):
             rprint(f"[red]{esc}[/red]")
         else:
             rprint(esc)
@@ -103,10 +122,19 @@ def timeline():
     if not rows:
         print("No snapshots yet.")
         raise typer.Exit(0)
-    t = Table("ID", "Created", "Branch", "Summary", "Resumed-From")
-    for sid, created, branch, summary, restored_from in rows:
-        t.add_row(str(sid), created, branch or "?", summary or "",
-                  str(restored_from) if restored_from else "")
+
+    # # = numeric ID (stable internal), Label = optional user label
+    t = Table("#", "Label", "Created", "Branch", "Summary", "Resumed-From")
+    for sid, created, branch, summary, restored_from, user_label in rows:
+        display_id = user_label or str(sid)
+        t.add_row(
+            str(sid),
+            display_id,
+            created,
+            branch or "?",
+            summary or "",
+            str(restored_from) if restored_from else "",
+        )
     rprint(t)
 
 
@@ -138,23 +166,31 @@ def _snapshot_if_dirty(repo: Path):
     help="Compare two snapshots. With --file-path, emit a patch for that file."
 )
 def diff(
-    a: int,
-    b: int,
+    a: str = typer.Argument(..., help="First snapshot ID or label."),
+    b: str = typer.Argument(..., help="Second snapshot ID or label."),
     file_path: Path = typer.Option(
         None,
         "--file-path",
         "-f",
-        help="Path to a file to show its patch between snapshots A and B."),
+        help="Path to a file to show its patch between snapshots A and B.",
+    ),
     all: bool = typer.Option(
         False,
         "--all",
-        help=
-        "Show all file names in the summary (ignored if --file-path is provided)."
+        help=("Show all file names in the summary "
+              "(ignored if --file-path is provided)."),
     ),
 ):
     try:
         repo = ensure_repo_root()
     except (NotAGitRepo, BareRepoUnsupported) as e:
+        print(str(e))
+        raise typer.Exit(2)
+
+    try:
+        a_id = resolve_snapshot_id(repo, a)
+        b_id = resolve_snapshot_id(repo, b)
+    except SnapshotNotFound as e:
         print(str(e))
         raise typer.Exit(2)
 
@@ -165,44 +201,55 @@ def diff(
             print(str(pe))
             raise typer.Exit(2)
 
-        patch, warn = patch_for_file_between_snapshots(repo, a, b, normalized)
+        patch, warn = patch_for_file_between_snapshots(repo, a_id, b_id,
+                                                       normalized)
         if warn:
             print(warn)
             raise typer.Exit(0)
         _render_patch_colored(patch)
         return
 
-    added, deleted, modified = compute_diff_sets(repo, a, b)
+    added, deleted, modified = compute_diff_sets(repo, a_id, b_id)
     header = "Files" if all else "Files (first 5 shown)"
     t = Table("Category", "Count", header)
 
     def show(lst):
         return ", ".join(lst) if all else ", ".join(lst[:5])
 
-    t.add_row("[green]Added[/green]",
-              str(len(added)),
-              show(added),
-              style="green")
-    t.add_row("[red]Deleted[/red]",
-              str(len(deleted)),
-              show(deleted),
-              style="red")
-    t.add_row("[yellow]Modified[/yellow]",
-              str(len(modified)),
-              show(modified),
-              style="yellow")
+    t.add_row(
+        "[green]Added[/green]",
+        str(len(added)),
+        show(added),
+        style="green",
+    )
+    t.add_row(
+        "[red]Deleted[/red]",
+        str(len(deleted)),
+        show(deleted),
+        style="red",
+    )
+    t.add_row(
+        "[yellow]Modified[/yellow]",
+        str(len(modified)),
+        show(modified),
+        style="yellow",
+    )
     rprint(t)
 
 
 @app.command(
     help="Restore to a specific snapshot (purges extra files by default).")
 def restore(
-    snap_id: int,
+    snap: str = typer.Argument(
+        ...,
+        help="Snapshot ID or label to restore to.",
+    ),
     purge: bool = typer.Option(
         False,
         "--purge/--no-purge",
         help="Delete files not in the snapshot (default: purge).",
-        show_default=True),
+        show_default=True,
+    ),
 ):
     try:
         repo = ensure_repo_root()
@@ -212,6 +259,12 @@ def restore(
 
     _snapshot_if_dirty(repo)
 
+    try:
+        snap_id = resolve_snapshot_id(repo, snap)
+    except SnapshotNotFound as e:
+        print(str(e))
+        raise typer.Exit(2)
+
     if index_locked(repo):
         print(
             "Index appears locked (ongoing Git operation). Skipping restore.")
@@ -219,19 +272,19 @@ def restore(
 
     restore_snapshot(repo, snap_id, purge=purge)
     _anchor_after_restore(repo, snap_id)
-    print(
-        f"Restored snapshot {snap_id}. (purge={'on' if purge else 'off'}) Anchored; next durable change will create a new latest snapshot."
-    )
+    print(f"Restored snapshot {snap_id}. (purge={'on' if purge else 'off'}) "
+          "Anchored; next durable change will create a new latest snapshot.")
 
 
-# Navigation helpers
+# Navigation helpers ---------------------------------------------------------
 @app.command(
     help="Restore the next snapshot after the current cursor (alias: n).")
 def next(purge: bool = typer.Option(
     False,
     "--purge/--no-purge",
     help="Delete files not in the target snapshot (default: purge).",
-    show_default=True), ):
+    show_default=True,
+), ):
     try:
         repo = ensure_repo_root()
     except (NotAGitRepo, BareRepoUnsupported) as e:
@@ -248,7 +301,7 @@ def next(purge: bool = typer.Option(
     state = load_tracker_state(repo)
     cur = state.get("baseline_snapshot_id")
 
-    target = None
+    target: Optional[int] = None
     if cur is None:
         target = ids[0]
     else:
@@ -278,7 +331,8 @@ def _next_alias(purge: bool = typer.Option(
     False,
     "--purge/--no-purge",
     help="Delete files not in the target snapshot (default: purge).",
-    show_default=True), ):
+    show_default=True,
+), ):
     return next(purge=purge)
 
 
@@ -288,7 +342,8 @@ def previous(purge: bool = typer.Option(
     False,
     "--purge/--no-purge",
     help="Delete files not in the target snapshot (default: purge).",
-    show_default=True), ):
+    show_default=True,
+), ):
     try:
         repo = ensure_repo_root()
     except (NotAGitRepo, BareRepoUnsupported) as e:
@@ -305,7 +360,7 @@ def previous(purge: bool = typer.Option(
     state = load_tracker_state(repo)
     cur = state.get("baseline_snapshot_id")
 
-    target = None
+    target: Optional[int] = None
     if cur is None:
         target = ids[-1]
     else:
@@ -337,14 +392,14 @@ def _previous_alias(purge: bool = typer.Option(
     False,
     "--purge/--no-purge",
     help="Delete files not in the target snapshot (default: purge).",
-    show_default=True), ):
+    show_default=True,
+), ):
     return previous(purge=purge)
 
 
 @app.command(
-    help=
-    "Continuously track the repo; snapshot only when durable changes stabilize."
-)
+    help=("Continuously track the repo; snapshot only when durable changes "
+          "stabilize."))
 def track(
     scan_interval: int = typer.Option(30, help="Polling interval in seconds."),
     snapshot_after: int = typer.Option(
@@ -358,14 +413,15 @@ def track(
 
     state_path = Path(repo / ".git/gitcrumbs/tracker_state.json")
     print(
-        f"Tracking repo at {repo} (scan_interval={scan_interval}s, snapshot_after={snapshot_after}s). Ctrl-C to stop."
-    )
+        f"Tracking repo at {repo} "
+        f"(scan_interval={scan_interval}s, snapshot_after={snapshot_after}s). "
+        "Ctrl-C to stop.")
     try:
         while True:
             state = load_tracker_state(repo)
 
-            if restore_lock_path(repo).exists() or index_locked(
-                    repo) or in_merge_or_rebase(repo):
+            if (restore_lock_path(repo).exists() or index_locked(repo)
+                    or in_merge_or_rebase(repo)):
                 time.sleep(scan_interval)
                 continue
 
@@ -376,9 +432,8 @@ def track(
                 state["last_seen_fingerprint"] = fp
                 state["last_seen_time"] = now
 
-            stable = (state.get("last_seen_time")
-                      is not None) and (now - state["last_seen_time"]
-                                        >= snapshot_after)
+            stable = (state.get("last_seen_time") is not None
+                      and (now - state["last_seen_time"] >= snapshot_after))
             baseline = state.get("baseline_fingerprint")
             different_from_baseline = (baseline is None) or (fp != baseline)
 
@@ -388,7 +443,8 @@ def track(
                         snap_id = create_snapshot(
                             repo,
                             restored_from_snapshot_id=state.get(
-                                "restored_from_snapshot_id"))
+                                "restored_from_snapshot_id"),
+                        )
                         state.update({
                             "baseline_fingerprint": fp,
                             "baseline_snapshot_id": snap_id,
@@ -401,7 +457,8 @@ def track(
                         snap_id = create_snapshot(
                             repo,
                             restored_from_snapshot_id=state.get(
-                                "restored_from_snapshot_id"))
+                                "restored_from_snapshot_id"),
+                        )
                         state.update({
                             "baseline_fingerprint": fp,
                             "baseline_snapshot_id": snap_id,
@@ -415,32 +472,51 @@ def track(
         print("Stopped tracking.")
 
 
-@app.command(help="Print file contents for PATH at snapshot ID to stdout.")
+@app.command(help="Print file contents for PATH at snapshot ID / Label to stdout.")
 def show_file(
-    snap_id: str,
-    file_path: str = typer.Argument(...,
-                                    help="Repo-relative or absolute path"),
+    snap: str = typer.Argument(
+        ...,
+        help="Snapshot ID or label.",
+    ),
+    file_path: str = typer.Argument(
+        ...,
+        help="Repo-relative or absolute path",
+    ),
 ):
     try:
-        write_file_to_stdout(int(snap_id), Path(file_path))
+        repo = ensure_repo_root()
+    except (NotAGitRepo, BareRepoUnsupported) as e:
+        print(str(e))
+        raise typer.Exit(2)
+
+    try:
+        snap_id = resolve_snapshot_id(repo, snap)
+    except SnapshotNotFound as e:
+        print(str(e))
+        raise typer.Exit(2)
+
+    try:
+        write_file_to_stdout(snap_id, Path(file_path))
     except Exception as e:
         print(str(e))
         raise typer.Exit(2)
 
 
 @app.command(
-    help=
-    "Remove .git/gitcrumbs from this repo (DB and metadata only; safe for Git history)."
-)
+    help=("Remove .git/gitcrumbs from this repo (DB and metadata only; "
+          "safe for Git history)."))
 def remove(
-    yes: bool = typer.Option(False,
-                             "--yes",
-                             "-y",
-                             help="Do not prompt for confirmation."),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Do not prompt for confirmation.",
+    ),
     dry_run: bool = typer.Option(
         False,
         "--dry-run",
-        help="Show what would be removed without deleting."),
+        help="Show what would be removed without deleting.",
+    ),
 ):
     try:
         repo = ensure_repo_root()
@@ -464,9 +540,8 @@ def remove(
                 pass
 
     size_mb = total_bytes / (1024 * 1024) if total_bytes else 0.0
-    print(
-        f"This will remove {total_files} files (~{size_mb:.2f} MB) under {sdir}"
-    )
+    print(f"This will remove {total_files} files (~{size_mb:.2f} MB) "
+          f"under {sdir}")
 
     if dry_run:
         print("Dry-run: no changes made.")
@@ -484,6 +559,41 @@ def remove(
     except Exception as e:
         print(f"Failed to remove {sdir}: {e}")
         raise typer.Exit(1)
+
+
+@app.command(help="Rename a snapshot with a new ID (label).")
+def rename(
+    existing: str = typer.Argument(
+        ...,
+        help="Existing snapshot ID or label.",
+    ),
+    new_id: str = typer.Argument(
+        ...,
+        help="New Label.",
+    ),
+):
+    try:
+        repo = ensure_repo_root()
+    except (NotAGitRepo, BareRepoUnsupported) as e:
+        print(str(e))
+        raise typer.Exit(2)
+
+    try:
+        snap_id = resolve_snapshot_id(repo, existing)
+    except SnapshotNotFound as e:
+        print(str(e))
+        raise typer.Exit(2)
+
+    try:
+        rename_snapshot(repo, snap_id, new_id)
+    except ValueError as ve:
+        print(str(ve))
+        raise typer.Exit(2)
+    except SnapshotNotFound as e:
+        print(str(e))
+        raise typer.Exit(2)
+
+    print(f"Changed snapshot label from '{existing}' to '{new_id}'.")
 
 
 @app.callback(invoke_without_command=True)

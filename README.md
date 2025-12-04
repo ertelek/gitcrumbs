@@ -98,6 +98,24 @@ gitcrumbs remove --dry-run   # see what would be deleted under .git/gitcrumbs
 gitcrumbs remove --yes       # removes gitcrumbs from the current repo
 ```
 
+### 6) Renaming snapshots
+```bash
+gitcrumbs timeline
+# ID=1
+# ID=2
+# ID=3
+
+gitcrumbs rename 2 last-working-snapshot
+
+gitcrumbs timeline
+# ID=1
+# ID=last-working-snapshot
+# ID=3
+
+gitcrumbs restore last-working-snapshot
+gitcrumbs show-file last-working-snapshot path/to/file.py
+```
+
 ---
 
 ## Commands (cheat sheet)
@@ -142,6 +160,9 @@ gitcrumbs show-file ID PATH
 
 gitcrumbs --version  # or: gitcrumbs -V
   Show the installed gitcrumbs version.
+
+gitcrumbs rename EXISTING_ID NEW_ID
+  Rename a snapshot with a new ID (label).
 ```
 
 ---

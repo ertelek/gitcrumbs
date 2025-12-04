@@ -1,5 +1,13 @@
 from __future__ import annotations
-import os, json, sqlite3, subprocess, hashlib, sys, time, tempfile
+import os
+import json
+import sqlite3
+import subprocess
+import hashlib
+import sys
+import time
+import tempfile
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -21,11 +29,17 @@ class PathOutsideRepo(ValueError):
     ...
 
 
+class SnapshotNotFound(RuntimeError):
+    ...
+
+
 # -------- Shell helpers --------
-def run_git(repo: Path,
-            *args: str,
-            check: bool = True,
-            text: bool = True) -> str:
+def run_git(
+    repo: Path,
+    *args: str,
+    check: bool = True,
+    text: bool = True,
+) -> str:
     cmd = ["git", "-C", str(repo), *args]
     p = subprocess.run(cmd, capture_output=True, text=text)
     if check and p.returncode != 0:
@@ -34,9 +48,11 @@ def run_git(repo: Path,
 
 
 def try_git(repo: Path, *args: str) -> tuple[str, int, str]:
-    p = subprocess.run(["git", "-C", str(repo), *args],
-                       capture_output=True,
-                       text=True)
+    p = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+    )
     return p.stdout, p.returncode, p.stderr
 
 
@@ -47,9 +63,11 @@ def try_git_bytes(repo: Path, *args: str) -> tuple[bytes, int, bytes]:
     Used for commands that may emit binary data (e.g., 'git cat-file blob'),
     to avoid Windows console decoding issues when text=True.
     """
-    p = subprocess.run(["git", "-C", str(repo), *args],
-                       capture_output=True,
-                       text=False)
+    p = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=False,
+    )
     return p.stdout, p.returncode, p.stderr
 
 
@@ -117,6 +135,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
       head_commit TEXT,
       summary TEXT,
       restored_from_snapshot_id INTEGER NULL,
+      user_label TEXT UNIQUE,
       FOREIGN KEY(restored_from_snapshot_id) REFERENCES snapshot(id)
     );
 
@@ -136,6 +155,14 @@ def init_schema(conn: sqlite3.Connection) -> None:
       value TEXT
     );
     """)
+
+    # Migration: for pre-existing DBs without user_label column.
+    try:
+        conn.execute("ALTER TABLE snapshot ADD COLUMN user_label TEXT UNIQUE;")
+    except sqlite3.OperationalError:
+        # Column already exists, safe to ignore.
+        pass
+
     conn.commit()
 
 
@@ -188,45 +215,45 @@ def compute_manifest(
             head, path = ent.split("\t", 1)
             parts = head.split()
             blob = parts[1]
-            p = (repo / path)
+            p = repo / path
             try:
                 st = p.stat()
                 size, mtime = st.st_size, int(st.st_mtime)
             except FileNotFoundError:
                 size, mtime = 0, 0
-            manifest[path] = ('T', blob, size, mtime)
+            manifest[path] = ("T", blob, size, mtime)
         except Exception:
             continue
 
     # Unstaged modifications
     diff_files = run_git(repo, "diff-files", "--name-only", "-z")
     for path in [x for x in diff_files.split("\0") if x]:
-        p = (repo / path)
+        p = repo / path
         if p.exists():
             blob = run_git(repo, "hash-object", "-w", "--", path).strip()
             st = p.stat()
-            manifest[path] = ('T', blob, st.st_size, int(st.st_mtime))
+            manifest[path] = ("T", blob, st.st_size, int(st.st_mtime))
         else:
-            manifest[path] = ('D', "DELETED", 0, 0)
+            manifest[path] = ("D", "DELETED", 0, 0)
 
     # Tracked deletions
     deleted = run_git(repo, "ls-files", "-d", "-z")
     for path in [x for x in deleted.split("\0") if x]:
-        manifest[path] = ('D', "DELETED", 0, 0)
+        manifest[path] = ("D", "DELETED", 0, 0)
 
     # Untracked (exclude ignored)
     untracked = run_git(repo, "ls-files", "-o", "--exclude-standard", "-z")
     for path in [x for x in untracked.split("\0") if x]:
-        p = (repo / path)
+        p = repo / path
         if p.is_file():
             try:
                 blob = run_git(repo, "hash-object", "-w", "--", path).strip()
                 st = p.stat()
-                manifest[path] = ('U', blob, st.st_size, int(st.st_mtime))
+                manifest[path] = ("U", blob, st.st_size, int(st.st_mtime))
             except ShellError:
                 try:
                     st = p.stat()
-                    manifest[path] = ('U', "UNHASHED", st.st_size,
+                    manifest[path] = ("U", "UNHASHED", st.st_size,
                                       int(st.st_mtime))
                 except FileNotFoundError:
                     pass
@@ -236,7 +263,7 @@ def compute_manifest(
                 blob = hashlib.sha256(
                     ("SYMLINK->" + target).encode()).hexdigest()
                 st = p.lstat()
-                manifest[path] = ('U', blob, st.st_size, int(st.st_mtime))
+                manifest[path] = ("U", blob, st.st_size, int(st.st_mtime))
             except OSError:
                 pass
 
@@ -250,7 +277,7 @@ def compute_fingerprint(repo: Path) -> str:
     lines: List[str] = [f"branch={branch}", f"head={head}"]
     for path in order:
         status, blob, size, mtime = manifest[path]
-        if status == 'T' or status == 'D':
+        if status == "T" or status == "D":
             lines.append(f"{status}|{path}|{blob}")
         else:  # 'U'
             lines.append(f"{status}|{path}|{blob}|{size}|{mtime}")
@@ -259,19 +286,24 @@ def compute_fingerprint(repo: Path) -> str:
 
 
 # -------- Snapshot ops --------
-def create_snapshot(repo: Path,
-                    restored_from_snapshot_id: Optional[int] = None) -> int:
+def create_snapshot(
+    repo: Path,
+    restored_from_snapshot_id: Optional[int] = None,
+) -> int:
     conn = connect_db(repo)
     init_schema(conn)
     branch, head = current_branch_and_head(repo)
     manifest, order = compute_manifest(repo)
-    mods = sum(1 for p in order if manifest[p][0] == 'T')
-    adds = sum(1 for p in order if manifest[p][0] == 'U')
-    dels = sum(1 for p in order if manifest[p][0] == 'D')
+    mods = sum(1 for p in order if manifest[p][0] == "T")
+    adds = sum(1 for p in order if manifest[p][0] == "U")
+    dels = sum(1 for p in order if manifest[p][0] == "D")
     summary = f"{adds} added, {mods} tracked/modified, {dels} deleted"
     cur = conn.cursor()
     cur.execute(
-        "INSERT INTO snapshot(branch, head_commit, summary, restored_from_snapshot_id) VALUES(?,?,?,?)",
+        """
+        INSERT INTO snapshot(branch, head_commit, summary, restored_from_snapshot_id)
+        VALUES(?,?,?,?)
+        """,
         (branch, head, summary, restored_from_snapshot_id),
     )
     snap_id = int(cur.lastrowid)
@@ -281,7 +313,10 @@ def create_snapshot(repo: Path,
             status, blob, size, mtime = manifest[path]
             rows.append((snap_id, path, status, blob, size, mtime))
         cur.executemany(
-            "INSERT INTO file_state(snapshot_id, path, status, blob_sha, size, mtime) VALUES(?,?,?,?,?,?)",
+            """
+            INSERT INTO file_state(snapshot_id, path, status, blob_sha, size, mtime)
+            VALUES(?,?,?,?,?,?)
+            """,
             rows,
         )
     conn.commit()
@@ -293,9 +328,11 @@ def list_snapshots(repo: Path):
     conn = connect_db(repo)
     init_schema(conn)
     cur = conn.cursor()
-    cur.execute(
-        "SELECT id, created_at, branch, summary, restored_from_snapshot_id FROM snapshot ORDER BY id ASC"
-    )
+    cur.execute("""
+        SELECT id, created_at, branch, summary, restored_from_snapshot_id, user_label
+        FROM snapshot
+        ORDER BY id ASC
+        """)
     rows = cur.fetchall()
     conn.close()
     return rows
@@ -305,12 +342,21 @@ def get_snapshot_manifest(repo: Path, snap_id: int):
     conn = connect_db(repo)
     cur = conn.cursor()
     cur.execute(
-        "SELECT path, status, blob_sha, size, mtime FROM file_state WHERE snapshot_id=?",
-        (snap_id, ))
-    out = {}
+        """
+        SELECT path, status, blob_sha, size, mtime
+        FROM file_state
+        WHERE snapshot_id=?
+        """,
+        (snap_id, ),
+    )
+    out: Dict[str, Tuple[str, str, int, int]] = {}
     for path, status, blob, size, mtime in cur.fetchall():
-        out[path] = (status, blob, size if size is not None else 0,
-                     mtime if mtime is not None else 0)
+        out[path] = (
+            status,
+            blob,
+            size if size is not None else 0,
+            mtime if mtime is not None else 0,
+        )
     conn.close()
     return out
 
@@ -346,7 +392,7 @@ def restore_snapshot(repo: Path, snap_id: int, purge: bool = False) -> None:
         for path, (status, blob, _, _) in manifest.items():
             p = repo / path
             p.parent.mkdir(parents=True, exist_ok=True)
-            if status == 'D':
+            if status == "D":
                 try:
                     if p.exists():
                         p.unlink()
@@ -453,7 +499,7 @@ def compute_diff_sets(repo: Path, a: int,
     setA, setB = set(A.keys()), set(B.keys())
     added = sorted(list(setB - setA))
     deleted = sorted(list(setA - setB))
-    modified = []
+    modified: List[str] = []
     for p in sorted(setA & setB):
         if A[p][0] != B[p][0] or A[p][1] != B[p][1]:
             modified.append(p)
@@ -461,8 +507,11 @@ def compute_diff_sets(repo: Path, a: int,
 
 
 def patch_for_file_between_snapshots(
-        repo: Path, a: int, b: int,
-        path_arg: str | Path) -> Tuple[str, Optional[str]]:
+    repo: Path,
+    a: int,
+    b: int,
+    path_arg: str | Path,
+) -> Tuple[str, Optional[str]]:
     rel_path = normalize_snapshot_path_arg(repo, Path(path_arg))
     A = get_snapshot_manifest(repo, a)
     B = get_snapshot_manifest(repo, b)
@@ -473,7 +522,7 @@ def patch_for_file_between_snapshots(
         if entry is None:
             return None
         status, blob, *_ = entry
-        if status == 'D':
+        if status == "D":
             return None
         if blob in ("UNHASHED", "DELETED"):
             return blob
@@ -482,12 +531,18 @@ def patch_for_file_between_snapshots(
     blob_a = blob_from(a_entry)
     blob_b = blob_from(b_entry)
     if blob_a == "UNHASHED" or blob_b == "UNHASHED":
-        return "", f"{rel_path}: cannot produce a content diff because one side is UNHASHED (untracked or unreadable during snapshot)."
+        return (
+            "",
+            f"{rel_path}: cannot produce a content diff because one side is UNHASHED "
+            "(untracked or unreadable during snapshot).",
+        )
     path_a = _write_blob_to_temp(repo, blob_a)
     path_b = _write_blob_to_temp(repo, blob_b)
     try:
-        label_a = f"snapshot:{a}:{rel_path}" if blob_a is not None else f"snapshot:{a}:/dev/null"
-        label_b = f"snapshot:{b}:{rel_path}" if blob_b is not None else f"snapshot:{b}:/dev/null"
+        label_a = (f"snapshot:{a}:{rel_path}"
+                   if blob_a is not None else f"snapshot:{a}:/dev/null")
+        label_b = (f"snapshot:{b}:{rel_path}"
+                   if blob_b is not None else f"snapshot:{b}:/dev/null")
         patch = _diff_two_files(path_a, path_b, label_a, label_b)
         return patch, None
     finally:
@@ -502,7 +557,8 @@ def patch_for_file_between_snapshots(
 def maybe_snapshot_current_state(repo: Path) -> Optional[int]:
     """If the working tree differs from the last baseline fingerprint, create a snapshot.
     Returns the new snapshot id, or None if no snapshot was created.
-    Skips snapshotting during restore/merge/rebase or when the index is locked."""
+    Skips snapshotting during restore/merge/rebase or when the index is locked.
+    """
     if restore_lock_path(repo).exists() or index_locked(
             repo) or in_merge_or_rebase(repo):
         return None
@@ -511,7 +567,8 @@ def maybe_snapshot_current_state(repo: Path) -> Optional[int]:
     if state.get("baseline_fingerprint") != fp:
         snap_id = create_snapshot(
             repo,
-            restored_from_snapshot_id=state.get("restored_from_snapshot_id"))
+            restored_from_snapshot_id=state.get("restored_from_snapshot_id"),
+        )
         state.update({
             "baseline_fingerprint": fp,
             "baseline_snapshot_id": snap_id,
@@ -564,3 +621,71 @@ def write_file_to_stdout(snap_id: int, file_path: Path):
         sys.stdout.buffer.write(out)
     else:
         sys.stdout.write(out)
+
+
+def resolve_snapshot_id(repo: Path, id_or_label: str | int) -> int:
+    """
+    Map a user-facing snapshot identifier (numeric ID or user_label)
+    to the underlying numeric snapshot.id.
+    """
+    conn = connect_db(repo)
+    init_schema(conn)
+    cur = conn.cursor()
+
+    # Try numeric ID first if it looks like an integer
+    value: Optional[int] = None
+    if isinstance(id_or_label, int):
+        value = id_or_label
+    elif isinstance(id_or_label, str) and id_or_label.isdigit():
+        value = int(id_or_label)
+
+    if value is not None:
+        cur.execute("SELECT id FROM snapshot WHERE id = ?", (value, ))
+        row = cur.fetchone()
+        if row:
+            conn.close()
+            return int(row[0])
+
+    # Fallback: treat it as a label
+    label = str(id_or_label)
+    cur.execute("SELECT id FROM snapshot WHERE user_label = ?", (label, ))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        raise SnapshotNotFound(f"Snapshot '{id_or_label}' does not exist.")
+    return int(row[0])
+
+
+def rename_snapshot(repo: Path, snap_id: int, new_label: str) -> None:
+    """Assign or update the user_label for a snapshot."""
+    conn = connect_db(repo)
+    init_schema(conn)
+    cur = conn.cursor()
+
+    # Ensure snapshot exists
+    cur.execute("SELECT id FROM snapshot WHERE id = ?", (snap_id, ))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        raise SnapshotNotFound(f"Snapshot {snap_id} does not exist.")
+
+    # Ensure label isn't used by some other snapshot
+    if new_label.isnumeric():
+        cur.execute("SELECT id FROM snapshot WHERE id = ?", (int(new_label), ))
+        existingID = cur.fetchone()
+    else:
+        existingID = None
+    cur.execute("SELECT id FROM snapshot WHERE user_label = ?", (new_label, ))
+    existingLabel = cur.fetchone()
+    if (existingID
+            and existingID[0] != snap_id) or (existingLabel
+                                              and existingLabel[0] != snap_id):
+        conn.close()
+        raise ValueError(f"Snapshot name '{new_label}' is already in use.")
+
+    cur.execute(
+        "UPDATE snapshot SET user_label = ? WHERE id = ?",
+        (new_label, snap_id),
+    )
+    conn.commit()
+    conn.close()
