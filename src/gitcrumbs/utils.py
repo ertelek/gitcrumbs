@@ -158,7 +158,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
     # Migration: for pre-existing DBs without user_label column.
     try:
-        conn.execute("ALTER TABLE snapshot ADD COLUMN user_label TEXT UNIQUE;")
+        conn.execute("ALTER TABLE snapshot ADD COLUMN user_label TEXT;")
     except sqlite3.OperationalError:
         # Column already exists, safe to ignore.
         pass
