@@ -150,10 +150,8 @@ def status():
     last = rows[-1] if rows else None
     state = load_tracker_state(repo)
     print(f"Repo: {repo}")
-    print(f"Last snapshot: {last[0] if last else 'None'}")
-    print(f"Tracker baseline set: {bool(state.get('baseline_fingerprint'))}")
-    print(f"Suppress-until-change: {state.get('suppress_until_change')}")
-    print(f"Cursor snapshot id: {state.get('baseline_snapshot_id')}")
+    print(f"Most recent snapshot: {last[0] if last else 'None'}")
+    print(f"Current snapshot id: {state.get('baseline_snapshot_id')}")
 
 
 def _snapshot_if_dirty(repo: Path):
