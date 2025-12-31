@@ -30,7 +30,8 @@ classifiers = [
 ]
 dependencies = [
   "typer>=0.12,<1.0",
-  "rich>=13,<14"
+  "rich>=13,<14",
+  "watchdog>=6.0.0",
 ]
 
 [project.scripts]

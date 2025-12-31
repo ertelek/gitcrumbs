@@ -2,12 +2,15 @@ from __future__ import annotations
 import os
 import shutil
 import time
+import threading
 from pathlib import Path
 import typer
 from typing import Optional
 from rich.table import Table
 from rich import print as rprint
 from rich.markup import escape
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 from gitcrumbs import __version__
 from gitcrumbs.utils import (
@@ -35,6 +38,7 @@ from gitcrumbs.utils import (
     resolve_snapshot_id,
     rename_snapshot,
     SnapshotNotFound,
+    tracker_state_path,
 )
 
 app = typer.Typer(
@@ -395,49 +399,97 @@ def _previous_alias(purge: bool = typer.Option(
     return previous(purge=purge)
 
 
-@app.command(
-    help=("Continuously track the repo; snapshot only when durable changes "
-          "stabilize."))
-def track(
-    scan_interval: int = typer.Option(30, help="Polling interval in seconds."),
-    snapshot_after: int = typer.Option(
-        90, help="Required time in seconds before creating a snapshot."),
-):
-    try:
-        repo = ensure_repo_root()
-    except (NotAGitRepo, BareRepoUnsupported) as e:
-        print(str(e))
-        raise typer.Exit(2)
+# ---------------------------------------------------------------------------
+# Tracking helpers: file-watching
+# ---------------------------------------------------------------------------
 
-    state_path = Path(repo / ".git/gitcrumbs/tracker_state.json")
-    print(
-        f"Tracking repo at {repo} "
-        f"(scan_interval={scan_interval}s, snapshot_after={snapshot_after}s). "
-        "Ctrl-C to stop.")
+class _RepoChangeHandler(FileSystemEventHandler):
+    """Watchdog handler that marks the repo as 'changed' on any FS event.
+
+    Ignores .git/ (including .git/gitcrumbs) so we don't get stuck on our own
+    metadata writes or Git internals.
+    """
+
+    def __init__(self, repo: Path, on_change):
+        super().__init__()
+        self._repo = repo.resolve()
+        self._on_change = on_change
+
+    def on_any_event(self, event):
+        if getattr(event, "is_directory", False):
+            return
+        src_path = getattr(event, "src_path", None)
+        if not src_path:
+            return
+        try:
+            rel = Path(src_path).resolve().relative_to(self._repo)
+        except Exception:
+            # Outside this repo; ignore
+            return
+        if rel.parts and rel.parts[0] == ".git":
+            # Ignore .git and our own .git/gitcrumbs writes
+            return
+        self._on_change()
+
+
+def _watching_track_loop(repo: Path, snapshot_after: int) -> None:
+    """Tracking loop that uses file-system events.
+
+    We record the time of the last change event, and when the repo has been
+    quiet for `snapshot_after` seconds we compute a fingerprint and snapshot
+    if it's different from the baseline.
+    """
+    state_path = tracker_state_path(repo)
+    change_event = threading.Event()
+
+    observer = Observer()
+    handler = _RepoChangeHandler(repo, lambda: change_event.set())
+    observer.schedule(handler, str(repo), recursive=True)
+    observer.start()
+
     try:
+        # Initial state: detect pre-existing untracked changes when we start
+        state = load_tracker_state(repo)
+        fp = compute_fingerprint(repo)
+        now = time.time()
+        last_change_at: Optional[float] = None
+
+        if fp != state.get("last_seen_fingerprint"):
+            state["last_seen_fingerprint"] = fp
+            state["last_seen_time"] = now
+            atomic_write_json(state_path, state)
+            # Treat this as a "change" that happened just now; after a quiet
+            # period we'll snapshot it.
+            last_change_at = now
+
+        print(
+            f"Tracking repo at {repo} using file watching "
+            f"(snapshot_after={snapshot_after}s). Ctrl-C to stop."
+        )
+
         while True:
-            state = load_tracker_state(repo)
-
+            # If Git itself is doing something sensitive, avoid snapshotting.
             if (restore_lock_path(repo).exists() or index_locked(repo)
                     or in_merge_or_rebase(repo)):
-                time.sleep(scan_interval)
+                change_event.wait(timeout=1.0)
+                change_event.clear()
                 continue
 
-            fp = compute_fingerprint(repo)
             now = time.time()
+            if (last_change_at is not None
+                    and (now - last_change_at) >= snapshot_after):
+                # Repo has been quiet long enough: compute fingerprint and
+                # create a snapshot if needed.
+                fp = compute_fingerprint(repo)
+                state = load_tracker_state(repo)
+                baseline = state.get("baseline_fingerprint")
+                different_from_baseline = (baseline is None) or (fp != baseline)
 
-            if fp != state.get("last_seen_fingerprint"):
                 state["last_seen_fingerprint"] = fp
                 state["last_seen_time"] = now
 
-            stable = (state.get("last_seen_time") is not None
-                      and (now - state["last_seen_time"] >= snapshot_after))
-            baseline = state.get("baseline_fingerprint")
-            different_from_baseline = (baseline is None) or (fp != baseline)
-
-            if stable:
-                if state.get("suppress_until_change"):
-                    if different_from_baseline:
+                if different_from_baseline:
+                    if state.get("suppress_until_change"):
                         snap_id = create_snapshot(
                             repo,
                             restored_from_snapshot_id=state.get(
@@ -450,8 +502,7 @@ def track(
                             "restored_from_snapshot_id": None,
                         })
                         print(f"Snapshot created: {snap_id}")
-                else:
-                    if different_from_baseline:
+                    else:
                         snap_id = create_snapshot(
                             repo,
                             restored_from_snapshot_id=state.get(
@@ -464,10 +515,34 @@ def track(
                         })
                         print(f"Snapshot created: {snap_id}")
 
-            atomic_write_json(state_path, state)
-            time.sleep(scan_interval)
+                atomic_write_json(state_path, state)
+                last_change_at = None
+
+            # Wait for FS events, but with a timeout so Ctrl-C is responsive
+            if change_event.wait(timeout=1.0):
+                change_event.clear()
+                last_change_at = time.time()
     except KeyboardInterrupt:
-        print("Stopped tracking.")
+        print("Stopped tracking (watching).")
+    finally:
+        observer.stop()
+        observer.join()
+
+
+@app.command(
+    help=("Continuously track the repo; snapshot only when durable changes "
+          "stabilize."))
+def track(
+    snapshot_after: int = typer.Option(
+        90, help="Required time in seconds before creating a snapshot."),
+):
+    try:
+        repo = ensure_repo_root()
+    except (NotAGitRepo, BareRepoUnsupported) as e:
+        print(str(e))
+        raise typer.Exit(2)
+
+    _watching_track_loop(repo, snapshot_after)
 
 
 @app.command(help="Print file contents for PATH at snapshot ID / Label to stdout.")

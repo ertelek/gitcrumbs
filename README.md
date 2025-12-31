@@ -41,10 +41,10 @@ cd /path/to/your/repo
 # 1) Prepares an SQLite DB and config file in .git/gitcrumbs/ to track file changes
 gitcrumbs init
 
-# 2) Start the tracker: it checks your files for new changes every `scan-interval` seconds, but snapshots only when the changes have stayed for some time (snapshot-after). Ctrl-C to stop
+# 2) Start the tracker: it watches your files for new changes, but snapshots only when the changes have stayed for some time (snapshot-after). Ctrl-C to stop
 gitcrumbs track
 # or
-gitcrumbs track --scan-interval 30 --snapshot-after 90
+gitcrumbs track --snapshot-after 90
 
 # 3) See what has been captured. Shows you snapshot IDs and when they were taken
 gitcrumbs timeline
@@ -77,7 +77,7 @@ gitcrumbs previous        # step back one snapshot
 
 ### 2) Continuous capture while you work
 ```bash
-gitcrumbs track --scan-interval 15 --snapshot-after 60
+gitcrumbs track --snapshot-after 60
 # Let this run in a separate terminal tab
 ```
 
@@ -124,8 +124,8 @@ gitcrumbs show-file 'last working snapshot' path/to/file.py
 gitcrumbs init
   Initialise .git/gitcrumbs/ (SQLite DB + config).
 
-gitcrumbs track [--scan-interval N] [--snapshot-after M]
-  Continuous tracker: snapshot only when the state changes and stays changed for M seconds.
+gitcrumbs track [--snapshot-after N]
+  Continuous tracker: snapshot only when a file(s) change and stay changed for N seconds.
 
 gitcrumbs timeline
   Show all snapshots with timestamps, branch, and a short summary.
@@ -203,4 +203,4 @@ Issues and PRs are welcome! If you hit an edge case, share a minimal repro.
 
 ## License
 
-MIT
+MIT License — © 2025 Értelek
